@@ -4,7 +4,7 @@
 
 1. Update `OCB_VERSION` in the `Makefile` to select the desired upstream version.
 2. Update `manifest.yaml` to select the desired upstream version and component selection for the product release.
-3. Run `make build` or `make build-in-podman`
+3. Run `make build` to perform a local build test.
 
 ## Release
 
