@@ -39,11 +39,11 @@ jobs:
           OTELCOL_VERSION=$(grep '^OCB_VERSION' Makefile | head -1 | awk -F'= ' '{print $2}' | tr -d ' ')
           echo "ocb_version=${OTELCOL_VERSION}" >> $GITHUB_OUTPUT
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${OTELCOL_VERSION}-${{ inputs.epoch }}"
+            TAG="${OTELCOL_VERSION}-r${{ inputs.epoch }}"
           elif [ "${{ github.event_name }}" = "push" ]; then
             REF_TAG=${{ github.ref_name }}
             EPOCH=$(echo $REF_TAG | sed 's/.*-r//')
-            TAG="${OTELCOL_VERSION}-${EPOCH}"
+            TAG="${OTELCOL_VERSION}-r${EPOCH}"
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             TAG="${OTELCOL_VERSION}-pr.${{ github.event.pull_request.number }}.${{ github.run_number }}"
           fi
