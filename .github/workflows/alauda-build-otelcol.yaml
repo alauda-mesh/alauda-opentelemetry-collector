@@ -1,0 +1,140 @@
+name: Alauda Build OpenTelemetry Collector
+
+on:
+  pull_request:
+    paths:
+      - "manifest.yaml"
+  push:
+    tags:
+      - "v*-r*"
+  workflow_dispatch:
+    inputs:
+      epoch:
+        description: Release epoch
+        required: true
+        type: number
+        default: 0
+
+env:
+  VENDOR_LD_EXTRAFLAGS: ${{ vars.LD_EXTRAFLAGS }}
+  IMAGE_NAME: build-harbor.alauda.cn/asm/opentelemetry-collector
+
+jobs:
+  determine-version:
+    name: Determine otelcol version
+    runs-on: ubuntu-latest
+
+    outputs:
+      tag: ${{ steps.image-version.outputs.tag }}
+      ocb_version: ${{ steps.image-version.outputs.ocb_version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine image version
+        id: image-version
+        run: |
+          # 从 Makefile 中提取 OTELCOL_VERSION
+          OTELCOL_VERSION=$(grep '^OCB_VERSION' Makefile | head -1 | awk -F'= ' '{print $2}' | tr -d ' ')
+          echo "ocb_version=${OTELCOL_VERSION}" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${OTELCOL_VERSION}-${{ inputs.epoch }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            REF_TAG=${{ github.ref_name }}
+            EPOCH=$(echo $REF_TAG | sed 's/.*-r//')
+            TAG="${OTELCOL_VERSION}-${EPOCH}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            TAG="${OTELCOL_VERSION}-pr.${{ github.event.pull_request.number }}.${{ github.run_number }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+  build-alauda-otelcol:
+    name: Build otelcol image
+    runs-on:
+      [
+        self-hosted,
+        linux,
+        "${{ matrix.platform == 'linux/arm64' && 'arm64' || 'x64' }}",
+      ]
+    needs: [determine-version]
+
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+
+    env:
+      http_proxy: ${{ vars.http_proxy }}
+      https_proxy: ${{ vars.https_proxy }}
+      no_proxy: ${{ vars.no_proxy }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to build-harbor.alauda.cn
+        uses: docker/login-action@v3
+        with:
+          registry: build-harbor.alauda.cn
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Determine platform tag
+        id: platform-tag
+        run: |
+          ARCH=$(echo "${{ matrix.platform }}" | sed 's/linux\///g')
+          echo "tag=${{ needs.determine-version.outputs.tag }}-${ARCH}" >> $GITHUB_OUTPUT
+
+      - name: Build and push otelcol image
+        uses: docker/build-push-action@v6
+        with:
+          platforms: ${{ matrix.platform }}
+          context: .
+          file: Dockerfile
+          push: true
+          build-args: |
+            OCB_VERSION=${{ needs.determine-version.outputs.ocb_version }}
+            LD_EXTRAFLAGS=${{ env.VENDOR_LD_EXTRAFLAGS }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.platform-tag.outputs.tag }}
+        env:
+          # 临时禁用 SUMMARY，详见：https://github.com/docker/build-push-action/issues/1388
+          DOCKER_BUILD_SUMMARY: false
+
+  merge-manifests:
+    name: Merge otelcol image manifests
+    runs-on: [self-hosted, linux]
+
+    env:
+      http_proxy: ${{ vars.http_proxy }}
+      https_proxy: ${{ vars.https_proxy }}
+      no_proxy: ${{ vars.no_proxy }}
+
+    needs: [determine-version, build-alauda-otelcol]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup crane
+        uses: imjasonh/setup-crane@v0.4
+        with:
+          version: latest-release
+
+      - name: Login to build-harbor.alauda.cn
+        uses: docker/login-action@v3
+        with:
+          registry: build-harbor.alauda.cn
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Merge manifests and push to image registry
+        env:
+          TAG_PREFIX: ${{ needs.determine-version.outputs.tag }}
+          TAGS: ${{ needs.determine-version.outputs.tag }}
+        run: |
+          for TAG in ${TAGS}; do
+            crane index append \
+              -m "${IMAGE_NAME}:${TAG_PREFIX}-amd64" \
+              -m "${IMAGE_NAME}:${TAG_PREFIX}-arm64" \
+              -t "${IMAGE_NAME}:${TAG}"
+          done
