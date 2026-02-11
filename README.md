@@ -14,4 +14,6 @@ After creating a new Release with a tag in the format `vx.y.z-rn` (for example, 
 
 ```bash
 make build
+# Check available components in this collector distribution
+./_build/otelcol components
 ```
