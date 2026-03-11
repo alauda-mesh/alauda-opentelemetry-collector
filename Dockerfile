@@ -1,6 +1,6 @@
 #syntax=build-harbor.alauda.cn/asm/dockerfile:1.12
 
-FROM docker-mirrors.alauda.cn/library/golang:1.25.7 AS build-stage
+FROM docker-mirrors.alauda.cn/library/golang:1.26.1 AS build-stage
 
 ARG OCB_VERSION
 ARG LD_EXTRAFLAGS
