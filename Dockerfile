@@ -5,7 +5,7 @@ FROM docker-mirrors.alauda.cn/library/golang:1.26.1 AS build-stage
 ARG OCB_VERSION
 ARG LD_EXTRAFLAGS
 
-ENV GOPROXY="https://goproxy.cn,direct"
+ENV GOPROXY="https://mirrors.aliyun.com/goproxy/,direct"
 
 WORKDIR /build
 

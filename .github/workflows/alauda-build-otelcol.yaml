@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "manifest.yaml"
+      - "Dockerfile"
   push:
     tags:
       - "v*-r*"
