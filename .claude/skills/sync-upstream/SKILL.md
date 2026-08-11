@@ -43,6 +43,10 @@ gh api "repos/open-telemetry/opentelemetry-collector-releases/tags?per_page=100"
   不会污染工作区，需要翻原始数据时去那里找。
 - 全程禁止 `git commit --amend`，一律创建新 commit，message 里不要带 `Co-Authored-By`。
   步骤 4 之前不要 push、不要建 PR。
+- **步骤编号是决策顺序，不是必须串行等待的顺序**。`ocp-changes.sh` 与 `diff-components.sh` 都是只读的，
+  不依赖构建结果，应该在 `build.sh` 后台跑的同时执行，把步骤 2 的报告先抛给用户 review。
+  否则每轮构建的十几分钟纯属干等。唯一的硬约束是 `diff-components.sh` 必须在步骤 2 的
+  manifest 改动**写入工作区之后**再跑（它读工作区文件，不读 commit，所以不必等重新构建完成）。
 
 ## 步骤 1：升级版本并本地构建
 
@@ -79,11 +83,16 @@ bash "$SKILL_DIR/scripts/build.sh"
     本地能编过但 CI 必然失败——这类问题只在 CI 暴露，白白浪费一轮流水线。出现该 WARN 就用 Edit 把
     workflow 的 `BUILD_BASE_IMAGE_VERSION`（以及 Dockerfile 里同名 ARG 的默认值）提到要求版本以上。
   - **组件完整性检查**：以 manifest 的模块是否都进了 ocb 生成的 `_build/*.go` 为准。这一项报 WARN
-    才是真的丢了组件。**不要拿 `otelcol components` 的数量去对 manifest 的数量**——那个命令本身会漏列
-    （实测 0.147.0 漏了 otlp/otlphttp exporter 和 k8sattributes processor，但它们确实编译进去了），
-    按它判断会每次都误报组件缺失。
+    才是真的丢了组件。**不要拿 `otelcol components` 的数量去对 manifest 的数量**——那个命令的输出
+    在不同版本上并不稳定：0.147.0 漏列了 otlp/otlphttp exporter 和 k8sattributes processor
+    （但它们确实编译进去了），0.158.0 实测已修复、数量与 manifest 完全吻合。
+    对得上不代表没问题，对不上也不代表丢组件，一律以"组件完整性检查"为准。
 - **BUILD_FAILED（2）**：脚本已附错误相关行和日志末尾。常见原因是某个组件在新版本被重命名或移除、
   模块版本不存在、或 Go 版本过低。分析后改 `manifest.yaml` 再重跑；拿不准就停下来问用户。
+
+构建**运行期间不要去读 `_build/go.mod` 判断依赖版本**：ocb 先写一个最小 go.mod 再交给 `go mod tidy`
+补全，中途读到的是中间态（grep `golang.org/x/...` 会得到空结果，看着像"没有这个依赖"）。
+要核对依赖版本，等 BUILD_SUCCESS 之后再读。
 
 构建通过后提交：`git add -A && git commit -m "chore: upgrade to version <X.Y.Z>"`（沿用仓库历史的 commit 风格）。
 
@@ -99,11 +108,20 @@ bash "$SKILL_DIR/scripts/ocp-changes.sh"
 
 分类只是把明显不需要人判断的提交先滤掉，**结论仍然要你自己下**：
 
-- `VERSION_BUMP` / `DEPS`：ACP 通过步骤 1 已经自然跟上，不用单独跟进；
+- `VERSION_BUMP`：ACP 通过步骤 1 已经自然跟上，不用单独跟进；
+- `DEPS`：这类提交多半只改 `_build/go.mod`、`_build/go.sum`（如手工提 `golang.org/x/crypto`、`x/net`）。
+  OCP 需要手改是因为他们把 `_build/` 提交进了仓库；ACP 每次构建由 ocb 重新生成 go.mod 并 `go mod tidy`，
+  版本由上游模块的最小版本选择决定，通常自然跟上甚至更高。**结论要拿证据**，构建完成后核对一次：
+  `grep -E "golang.org/x/(crypto|net) " _build/go.mod`，把实际解析到的版本写进汇报。
+  只有当 CVE 要求的版本**高于**上游模块的要求时，ACP 这条路径才拿不到，那时才需要在 manifest 加
+  `replaces:` 或在 Dockerfile 补 `go get`；
 - `RHEL_ONLY`（`.spec.in`、SELinux `.te`、packit、chainsaw 等）：ACP 交付容器镜像，不适用；
 - `DOC`：一般不跟进，除非文档描述的是我们也该有的能力；
 - `MANIFEST_COMPONENT` / `CONFIG` / `OTHER`：需要看 PR 内容判断。要看具体 diff 时读脚本缓存的 commit
   JSON，或用 `gh api repos/os-observability/redhat-opentelemetry-collector/commits/<sha> -q '.files[] | .filename, .patch'`。
+  注意 `OTHER` 里混着 OCP 自研的 **configschemas 工具链**（`_build/schema_generator_test.go`、
+  Makefile 的 `generate-schemas` 目标、依赖 `github.com/pavolloffay/opentelemetry-mcp-server`）——
+  那是他们给自家 MCP server 生成配置 schema 用的，不进交付产物，ACP 无此机制，一律不适用。
 
 判断"ACP 是否已包含该功能"时，对照本仓库的 `manifest.yaml`、`Dockerfile`、`configs/otelcol.yaml` 和 workflow。
 
@@ -117,6 +135,9 @@ bash "$SKILL_DIR/scripts/ocp-changes.sh"
 
 表格下面附一行：
 `请回复要跟进的编号（如 1,3）；全部跟进回 all，都不跟进回 none；也可以直接说你的想法。`
+
+表格给完整信息，然后再用 **AskUserQuestion** 把它收敛成几个可点选的方案（把推荐项放第一个并标
+"（推荐）"，用户仍可选 Other 自由输入）。实测比纯文本等回复顺手得多：表格负责讲清楚，选项负责好点。
 
 **然后停下来等用户回复**，不要自作主张先改。这一步是用户 review 的入口，抢跑会让整件事失去意义。
 
@@ -139,9 +160,21 @@ bash "$SKILL_DIR/scripts/diff-components.sh"
 逐条给出跟进建议时考虑：ACP 的使用场景（服务网格 / 可观测性，不涉及 AWS/GCP 托管服务）、组件的稳定性等级、
 以及引入后对镜像体积和依赖面的影响。步骤 2 已经决策过的条目要标注"已在步骤 2 处理"，不要让用户重复 review。
 
-带 **⚠** 标记的条目要特别当心：那说明该模块在 OCP 侧还配了 `import:` 续行或 `replaces:` 重定向
-（例如 `go.opentelemetry.io/obi` 被 replace 到本地 clone 的源码目录），照抄一行 `gomod` 必然构建失败。
-这类要么连带把 OCP 的完整配置搬过来（包括 Makefile 里拉源码的步骤），要么在报告里如实说明成本、建议不跟进。
+带 **⚠** 标记的条目要特别当心：那说明该模块在 OCP 侧还配了 `import:` 续行或 `replaces:` 重定向，
+照抄一行 `gomod` 必然构建失败。这类要么连带把 OCP 的完整配置搬过来（包括 Makefile 里拉源码的步骤），
+要么在报告里如实说明成本、建议不跟进。
+
+**已有先例：OBI eBPF receiver（`go.opentelemetry.io/obi`，OCP PR #146）。** 2026-08 的 v0.158.0
+同步中评估后决定**不跟进**，理由如下，下次再遇到可直接引用，不必重新翻 PR：
+
+- manifest 侧要 `import: go.opentelemetry.io/obi/collector` 续行 + `replaces: go.opentelemetry.io/obi => ../.obi-src`；
+- Makefile 要新增 `ensure-obi`（按 manifest 里的版本 `git clone --branch` 上游
+  `opentelemetry-ebpf-instrumentation`）与 `generate-obi`（在 clone 目录里跑 `make generate` 生成 eBPF 字节码），
+  并挂到 `build` 前置；
+- Dockerfile 构建阶段要装 `clang`、`llvm`，且构建期需要能访问 GitHub 拉源码；
+- 运行期需要特权 / `CAP_BPF`，与 ACP 现有的非特权容器交付方式不匹配。
+
+若将来 OBI 能直接从 module proxy 消费（不再需要 `replaces` 到本地源码），成本会大幅下降，值得重新评估。
 
 报告格式同步骤 2：
 
@@ -167,12 +200,17 @@ bash "$SKILL_DIR/scripts/create-pr.sh" <PR正文文件>
 脚本会 push 同步分支并创建 PR（分支已有 open PR 时幂等复用），输出 `PR_NUMBER=` 与 `PR_URL=`。
 若报 gh 未认证，提示用户执行 `! gh auth login` 后重试。
 
-接着监控流水线。self-hosted runner 上的双平台镜像构建通常需要 10～40 分钟，
+接着监控流水线。self-hosted runner 上的双平台镜像构建通常需要 10～40 分钟（v0.158.0 那轮实测约 9.5 分钟），
 **必须用后台方式运行**（`run_in_background: true`），完成后会收到通知：
 
 ```bash
 bash "$SKILL_DIR/scripts/watch-pipeline.sh"
 ```
+
+**监控期间不要往同步分支 push 任何东西**（包括顺手提交的 skill 改动、README 之类）。脚本每轮都会重取
+PR head 来跟踪修复 commit，一旦 head 变了，它就改去查新 commit 的 run；而 `.claude/` 这类改动命中不了
+workflow 的 `paths` 过滤、不会产生新 run，于是脚本在宽限期后报 **PIPELINE_NOT_FOUND**——明明构建好好的，
+却被自己打断。与本次升级无关的改动一律等流水线出结果之后再处理。
 
 按退出结果处理：
 

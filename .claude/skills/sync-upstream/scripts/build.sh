@@ -115,8 +115,9 @@ if ./_build/otelcol components >"$COMPONENTS_OUT" 2>/dev/null; then
       for (s in cnt) printf "  %-12s %d\n", s, cnt[s]
     }
   ' "$COMPONENTS_OUT" | sort
-  echo "  注意: 这里的数量常常少于 manifest 声明数，属该命令自身的输出缺陷而非组件缺失"
-  echo "  （已实测 0.147.0 会漏列 otlp/otlphttp exporter 与 k8sattributes processor，但它们确实编译进去了）。"
+  echo "  注意: 这里的数量在不同版本上并不稳定，对不上不代表组件缺失"
+  echo "  （0.147.0 会漏列 otlp/otlphttp exporter 与 k8sattributes processor，但它们确实编译进去了；"
+  echo "   0.158.0 实测已修复、与 manifest 完全吻合。对得上同样不构成结论）。"
   echo "  判断组件有没有丢，以上面的\"组件完整性检查\"为准。"
   echo "  完整清单: $COMPONENTS_OUT"
 else
