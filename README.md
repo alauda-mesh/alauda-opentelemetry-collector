@@ -33,6 +33,35 @@ skill 位于 [.claude/skills/sync-upstream](./.claude/skills/sync-upstream)，�
    参考：[opentelemetry-collector-releases/distributions/otelcol-contrib/manifest.yaml](https://github.com/open-telemetry/opentelemetry-collector-releases/blob/main/distributions/otelcol-contrib/manifest.yaml)
 3. 执行 `make build` 做一次本地构建测试。
 
+## 漏洞修复
+
+TODO: 因为升级到 v0.158.0 后无漏洞，所以 fix-image-vulns skill 未实际验证过。
+
+修复流水线构建出的 otelcol 镜像漏洞。在本仓库根目录执行，参数是构建流水线的 run ID（或 run URL），
+也可以直接给镜像地址：
+
+```
+/fix-image-vulns 31468229342
+/fix-image-vulns build-harbor.alauda.cn/asm/opentelemetry-collector:0.158.0-pr.5.15
+```
+
+skill 位于 [.claude/skills/fix-image-vulns](./.claude/skills/fix-image-vulns)，流程是：
+扫描镜像（内网服务）→ 按责任分类 → 修复 → 本地 `make build` 并校验修复真的落到产物上 →
+建 PR 并盯流水线 → 回归扫描，还有漏洞就再修，最多 3 轮。
+
+两类漏洞的修法：
+
+| 类别 | 修复手段 |
+| --- | --- |
+| Go 标准库 | 升 [alauda-build-otelcol.yaml](./.github/workflows/alauda-build-otelcol.yaml) 的 `BUILD_BASE_IMAGE_VERSION` |
+| Go 依赖库 | 在 [manifest.yaml](./manifest.yaml) 的 `replaces:` 段把模块钉到修复版本 |
+| os 级 | **不修**，只在报告里如实列出（归基础镜像维护方） |
+
+修复基线是**当前检出分支**，所以要把修复提到某个 PR 分支上时，先检出那个分支再调用。
+PR 不会自动合并，仍需你 review。
+
+前置条件：`gh` 已登录（`gh auth login`）、本地有 Go 工具链、能访问内网扫描服务。
+
 ## Release
 
 After creating a new Release with a tag in the format `vx.y.z-rn` (for example, `v0.145.0-r0`), the image build action will be triggered automatically.

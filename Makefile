@@ -5,7 +5,7 @@ OTELCOL_BUILDER_DIR ?= ${PWD}/bin
 OTELCOL_BUILDER ?= ${OTELCOL_BUILDER_DIR}/ocb
 
 # VENDOR_LD_EXTRAFLAGS ?=
-VENDOR_LD_EXTRAFLAGS = -s -w -X runtime.buildVersion=unknown -X runtime.modinfo=
+VENDOR_LD_EXTRAFLAGS = -s -w
 LD_EXTRAFLAGS ?= "$(VENDOR_LD_EXTRAFLAGS)"
 PLATFORMS ?= linux/arm64,linux/amd64
 # BUILDX_OUTPUT defines the buildx output
