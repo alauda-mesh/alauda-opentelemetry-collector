@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "manifest.yaml"
+      - ".github/workflows/alauda-build-otelcol.yaml"
   push:
     tags:
       - "v*-r*"
