@@ -3,6 +3,7 @@ name: Alauda Build OpenTelemetry Collector
 on:
   pull_request:
     paths:
+      - "Dockerfile"
       - "manifest.yaml"
       - ".github/workflows/alauda-build-otelcol.yaml"
   push:
@@ -17,6 +18,8 @@ on:
         default: 0
 
 env:
+  BUILD_BASE_IMAGE_REPO: docker-mirrors.alauda.cn/library/golang
+  BUILD_BASE_IMAGE_VERSION: 1.26.5
   VENDOR_LD_EXTRAFLAGS: ${{ vars.LD_EXTRAFLAGS }}
   IMAGE_NAME: build-harbor.alauda.cn/asm/opentelemetry-collector
 
@@ -94,6 +97,8 @@ jobs:
           file: Dockerfile
           push: true
           build-args: |
+            BUILD_BASE_IMAGE_REPO=${{ env.BUILD_BASE_IMAGE_REPO }}
+            BUILD_BASE_IMAGE_VERSION=${{ env.BUILD_BASE_IMAGE_VERSION }}
             OCB_VERSION=${{ needs.determine-version.outputs.ocb_version }}
             LD_EXTRAFLAGS=${{ env.VENDOR_LD_EXTRAFLAGS }}
           labels: |
