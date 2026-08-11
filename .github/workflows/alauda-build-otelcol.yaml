@@ -3,7 +3,9 @@ name: Alauda Build OpenTelemetry Collector
 on:
   pull_request:
     paths:
+      - "Dockerfile"
       - "manifest.yaml"
+      - ".github/workflows/alauda-build-otelcol.yaml"
   push:
     tags:
       - "v*-r*"
@@ -16,6 +18,8 @@ on:
         default: 0
 
 env:
+  BUILD_BASE_IMAGE_REPO: docker-mirrors.alauda.cn/library/golang
+  BUILD_BASE_IMAGE_VERSION: 1.26.5
   VENDOR_LD_EXTRAFLAGS: ${{ vars.LD_EXTRAFLAGS }}
   IMAGE_NAME: build-harbor.alauda.cn/asm/opentelemetry-collector
 
@@ -30,7 +34,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Determine image version
         id: image-version
@@ -70,10 +74,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Login to build-harbor.alauda.cn
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: build-harbor.alauda.cn
           username: ${{ secrets.HARBOR_USERNAME }}
@@ -86,15 +90,21 @@ jobs:
           echo "tag=${{ needs.determine-version.outputs.tag }}-${ARCH}" >> $GITHUB_OUTPUT
 
       - name: Build and push otelcol image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           platforms: ${{ matrix.platform }}
           context: .
           file: Dockerfile
           push: true
           build-args: |
+            BUILD_BASE_IMAGE_REPO=${{ env.BUILD_BASE_IMAGE_REPO }}
+            BUILD_BASE_IMAGE_VERSION=${{ env.BUILD_BASE_IMAGE_VERSION }}
             OCB_VERSION=${{ needs.determine-version.outputs.ocb_version }}
             LD_EXTRAFLAGS=${{ env.VENDOR_LD_EXTRAFLAGS }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.ref.name=${{ github.ref_name }}
           tags: |
             ${{ env.IMAGE_NAME }}:${{ steps.platform-tag.outputs.tag }}
         env:
@@ -105,6 +115,9 @@ jobs:
     name: Merge otelcol image manifests
     runs-on: [self-hosted, linux]
 
+    outputs:
+      image: ${{ steps.output_image.outputs.image }}
+
     env:
       http_proxy: ${{ vars.http_proxy }}
       https_proxy: ${{ vars.https_proxy }}
@@ -113,7 +126,7 @@ jobs:
     needs: [determine-version, build-alauda-otelcol]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup crane
         uses: imjasonh/setup-crane@v0.4
@@ -121,7 +134,7 @@ jobs:
           version: latest-release
 
       - name: Login to build-harbor.alauda.cn
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: build-harbor.alauda.cn
           username: ${{ secrets.HARBOR_USERNAME }}
@@ -138,3 +151,17 @@ jobs:
               -m "${IMAGE_NAME}:${TAG_PREFIX}-arm64" \
               -t "${IMAGE_NAME}:${TAG}"
           done
+
+      - name: "Output image: ${{ env.IMAGE_NAME }}:${{ needs.determine-version.outputs.tag }}"
+        id: output_image
+        shell: bash
+        env:
+          IMAGE: ${{ env.IMAGE_NAME }}:${{ needs.determine-version.outputs.tag }}
+        run: |
+          echo "BUILD_IMAGE=${IMAGE}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Build image"
+            echo
+            echo "\`${IMAGE}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
