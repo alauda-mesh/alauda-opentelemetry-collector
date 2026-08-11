@@ -105,6 +105,9 @@ jobs:
     name: Merge otelcol image manifests
     runs-on: [self-hosted, linux]
 
+    outputs:
+      image: ${{ steps.output_image.outputs.image }}
+
     env:
       http_proxy: ${{ vars.http_proxy }}
       https_proxy: ${{ vars.https_proxy }}
@@ -138,3 +141,17 @@ jobs:
               -m "${IMAGE_NAME}:${TAG_PREFIX}-arm64" \
               -t "${IMAGE_NAME}:${TAG}"
           done
+
+      - name: "Output image: ${{ env.IMAGE_NAME }}:${{ needs.determine-version.outputs.tag }}"
+        id: output_image
+        shell: bash
+        env:
+          IMAGE: ${{ env.IMAGE_NAME }}:${{ needs.determine-version.outputs.tag }}
+        run: |
+          echo "BUILD_IMAGE=${IMAGE}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Build image"
+            echo
+            echo "\`${IMAGE}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
