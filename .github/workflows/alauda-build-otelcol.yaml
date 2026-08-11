@@ -95,6 +95,10 @@ jobs:
           build-args: |
             OCB_VERSION=${{ needs.determine-version.outputs.ocb_version }}
             LD_EXTRAFLAGS=${{ env.VENDOR_LD_EXTRAFLAGS }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.ref.name=${{ github.ref_name }}
           tags: |
             ${{ env.IMAGE_NAME }}:${{ steps.platform-tag.outputs.tag }}
         env:
