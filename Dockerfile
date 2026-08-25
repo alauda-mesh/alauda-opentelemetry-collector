@@ -1,7 +1,7 @@
 #syntax=build-harbor.alauda.cn/asm/dockerfile:1.12
 
 ARG BUILD_BASE_IMAGE_REPO=docker-mirrors.alauda.cn/library/golang
-ARG BUILD_BASE_IMAGE_VERSION=1.26.1
+ARG BUILD_BASE_IMAGE_VERSION=1.26.7
 
 FROM ${BUILD_BASE_IMAGE_REPO}:${BUILD_BASE_IMAGE_VERSION} AS build-stage
 
