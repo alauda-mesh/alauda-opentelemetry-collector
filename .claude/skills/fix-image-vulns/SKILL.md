@@ -41,23 +41,49 @@ ocb 按它生成 `_build/go.mod` 再编译。所以修依赖漏洞的手段是�
   单独 replace 一个很容易编译不过。这种情况的正解通常是整体升级 collector 版本（走 `/sync-upstream`），
   先把分析结论告诉用户再决定，不要硬钉。
 - 扫描结果里 `InstalledVersion` 带 `v` 前缀、`FixedVersion` 不带，拼 `--replace` 参数时要补上 `v`。
+- **修复候选不能直接"取最高"，也不能挑字面第一个。** 扫描器给的 `FixedVersion` 里混着三类东西：
+  预发布版（`1.27.0-rc.3`，不能用于生产构建，而且 mirror 里常常压根不存在）、
+  旧 minor 线的补丁版（当前 1.26.5 时给的 `1.25.13`，升上去等于降级）、以及真正可用的版本。
+  `scan-image.sh` 现在会自动排除前两类、同 minor 线优先、再探测 registry 上从该版本起最新的可用补丁版，
+  直接吐出一行可以照抄的 `→ apply-fix.sh --go <版本>`。**照它给的执行，不要自己回候选列表里挑。**
+- **每条 CVE 的候选列表不一定相同**，定了版本要回头核对它覆盖了**每一条**。
+  实测 0.158.0：8 条 stdlib CVE 里 7 条 1.25.13 就能修，但 CVE-2026-46600 要 ≥1.26.6。
 - 构建基础镜像的目标 tag 必须在 `docker-mirrors.alauda.cn` 里真的存在，`apply-fix.sh` 会先查，
   404 直接拒绝，免得流水线跑到拉镜像才失败。**这是个常见情况**：Go 刚发新补丁版、扫描器已经把它
-  当修复版本了，但镜像仓库还没同步（实测 2026-08 时 `golang:1.26.6` 就是 404）。
-  处理方式是退而求其次选一个"存在且能覆盖该 CVE"的版本；如果压根没有更高的可用版本，
-  就不要硬凑——把这条 stdlib 漏洞记进"暂时修不了"，说明原因（上游补丁版镜像未同步）让用户决策。
+  当修复版本了，但镜像仓库还没同步。哪个版本 404 是会变的（2026-08-25 实测 `1.26.6`/`1.26.7`/`1.27.0`
+  都在，而 `1.26.8`、`1.27.0-rc.3` 是 404），别把某个具体版本当结论，以 `newest_available_patch` 的实测为准。
+  如果压根没有更高的可用版本，就不要硬凑——把这条 stdlib 漏洞记进"暂时修不了"，
+  说明原因（上游补丁版镜像未同步）让用户决策。
+- **`Dockerfile` 的 `ARG BUILD_BASE_IMAGE_VERSION` 与 workflow 的 `env` 会长期不同步**
+  （实测 Dockerfile 停在 1.26.1、workflow 已是 1.26.5，因为流水线用 build-arg 覆盖，Dockerfile 那个值只影响本地
+  `docker build`）。`apply-fix.sh` 会把两边一起对齐到目标版本，所以 diff 里 Dockerfile 的跨度会比 workflow 大——
+  写报告时按各自的实际旧值写，别以为两边是从同一个版本升上来的。
 - 流水线的 `paths` 过滤只含 `Dockerfile` / `manifest.yaml` / 该 workflow 自身。两类修复都命中，
   但如果最后只提交了无关文件，PR 不会构建，也就没有新镜像可回归扫描。
 - **构建期间不要去读 `_build/go.mod`**：ocb 先写一个最小 go.mod 再交给 `go mod tidy` 补全，
   中途读到的是中间态。要看依赖版本等 `build-verify.sh` 跑完。
-- **监控流水线期间不要往修复分支 push 任何无关改动**（顺手提交的 skill 改动、README 之类）。
-  `watch-pr.sh` 每轮重取 PR head，head 一变就改去找新 commit 的 run，而无关改动命中不了 paths
-  过滤、不会产生新 run，于是在宽限期后报 PIPELINE_NOT_FOUND——明明构建好好的，却被自己打断。
+- **`pull_request` 的 `paths` 过滤是按整个 PR diff 判定的，不是按这一次 push 改了哪些文件。**
+  修复 PR 里已经改过 `Dockerfile` / `manifest.yaml`，那么之后哪怕只 push 一个纯文档改动，
+  synchronize 事件照样命中过滤、照样把双平台镜像重新构建一遍
+  （实测 2026-08-25：往 PR #6 追加一个只动 `.claude/**` 和 `README.md` 的 commit，
+  触发了新 run 32803862571）。
+- **正因如此，监控流水线期间不要往修复分支 push 任何无关改动**（顺手提交的 skill 改动、README 之类）：
+  `watch-pr.sh` 每轮重取 PR head，head 一变就转去盯新 commit 的 run，上一轮快跑完的构建白等，
+  还多烧一次双平台构建。无关改动要么并进第一个 commit 一起提，要么等整轮跑完再 push。
+  （反过来，如果 PR 从头到尾只有无关文件，那就一次 run 都不会有，`watch-pr.sh` 在宽限期后报
+  PIPELINE_NOT_FOUND，`create-pr.sh` 对这种情况提前有 warn。）
 - git 规矩：**禁止 `git commit --amend`**，一律新建 commit；message 不要带 `Co-Authored-By` /
   `Claude-Session`。`gh` 命令必须显式 `--repo alauda-mesh/alauda-opentelemetry-collector`（脚本已内置）。
 - 修复轮次上限 **3 轮**（首轮 + 回归后最多再修 2 次），修不完就如实汇报，让用户决策。
 - 各脚本的中间产物（扫描 JSON、分类 TSV、构建日志、步骤间状态）都在 `.git/otel-vulnfix/` 下，
   不污染工作区，需要翻原始数据去那里找。
+- **`create-fix-branch.sh` 报"工作区有未提交改动"时，先看清楚那是什么。** 实测遇到过仓库根目录躺着一个
+  302MB 的 `core.25013`——`strings core.* | head` 一看是 **google-chrome 崩溃留下的 core dump**
+  （浏览器自动化的 profile 路径），跟本仓库毫无关系，而 `.gitignore` 只忽略了 `_build`/`bin`，不覆盖 `core.*`。
+  确认来源与本仓库无关就删掉再重跑；**不要顺手把 `core.*` 加进 `.gitignore`**，那条改动会混进修复 PR。
+- **本地 `make build` 要限制并行度。** 整个发行版编译默认按 CPU 数并行，容易把内存吃满
+  （用户环境有内存上限约束）。实测 `GOFLAGS=-p=4 bash "$SKILL_DIR/scripts/build-verify.sh"`
+  编译进程 RSS 峰值约 300MB，全程平稳。
 
 ## 步骤 1：漏洞检测
 
@@ -77,7 +103,10 @@ PR 分支上，先检出该分支再调用本 skill。
 - **REPORT_ONLY**：剩余全是不修复项（os 级 / 无修复版本）。列明细并说明原因，结束；
 - **FIX_NEEDED**：执行步骤 2～5。
 
-**假阴性守卫**：扫描 API 返回的 `{"os":[...],"lang":[...]}` 里**只装漏洞、不装包清单**，
+**假阴性守卫**（只在 **Go 漏洞总数为 0** 时才需要走；
+stdlib 条目和依赖条目出自同一个 gobinary 解析器，所以只要 stdlib 报出了漏洞，
+就已经证明二进制被解析了，此时 `GO_MODULE=0` 是可信的，不用再对照）：
+扫描 API 返回的 `{"os":[...],"lang":[...]}` 里**只装漏洞、不装包清单**，
 所以 `{"os":[],"lang":[]}` 这种响应，"真干净"和"根本没扫到东西"长得一模一样，
 「0 条」自己证明不了自己。镜像里又是一个 180MB 的 Go 二进制，报 0 条有两种可能，
 逐一排除后才能下结论：

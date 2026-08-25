@@ -84,6 +84,28 @@ ver_ge() {
   [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -1)" == "$a" ]]
 }
 
+# 预发布版本判定（1.27.0-rc.3 / 1.28.0-beta.1，以及 Go module 的伪版本 v1.2.3-0.2026...）。
+# 扫描器会把预发布版当成"修复版本"一起给出来，但它不能用于生产构建，推荐时要先排除。
+ver_is_prerelease() { [[ "$(ver_norm "$1")" == *-* ]]; }
+
+# newest_available_patch <MAJOR.MINOR> <起始补丁号>
+# 在同一 minor 线上从起始补丁号向上探测，回显 registry 里最新存在的 golang 补丁版本。
+# 两个用途：起始版本本身可能 404（上游发了补丁但 mirror 还没同步），
+# 以及顺手选到更高的补丁版，省得下次再为新 CVE 升一遍。
+# 连续 2 次取不到就停（mirror 的 tag 基本是连着同步的），最多探 10 个，避免慢查询堆积。
+# 一个都不存在时回显空串。
+newest_available_patch() {
+  local mm="$1" start="$2" best="" miss=0 i
+  for (( i = 0; i < 10; i++ )); do
+    if [[ "$(check_base_image_tag "${mm}.$((start + i))")" == EXISTS ]]; then
+      best="${mm}.$((start + i))"; miss=0
+    else
+      miss=$((miss + 1)); [[ "$miss" -ge 2 ]] && break
+    fi
+  done
+  echo "$best"
+}
+
 # 读取流水线实际生效的 Go 构建基础镜像版本（workflow 的 env.BUILD_BASE_IMAGE_VERSION）
 workflow_go_version() {
   awk -F':' '/^[[:space:]]+BUILD_BASE_IMAGE_VERSION:/ { gsub(/[[:space:]"]/, "", $2); print $2; exit }' \

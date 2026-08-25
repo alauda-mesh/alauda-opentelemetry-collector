@@ -151,11 +151,50 @@ if [[ "$STDLIB_N" -gt 0 || "$GOMOD_N" -gt 0 ]]; then
   if [[ "$STDLIB_N" -gt 0 ]]; then
     INST="$(awk -F'\t' '$1 == "GO_STDLIB" { print $3; exit }' "$TSV")"
     CANDS="$(awk -F'\t' '$1 == "GO_STDLIB" { print $4 }' "$TSV" | tr ',' '\n' | grep -v '^$' | sort -uV || true)"
-    if [[ -n "$CANDS" ]]; then
-      echo "  [stdlib] 当前 go ${INST}  CVE×${STDLIB_N}  修复候选: $(paste -sd'/' - <<<"$CANDS")"
-      echo "           → apply-fix.sh --go $(tail -1 <<<"$CANDS")   （取最高候选；跨 minor 要在最终报告里着重说明）"
-    else
+    if [[ -z "$CANDS" ]]; then
       echo "  [stdlib] 当前 go ${INST}  CVE×${STDLIB_N}  （无修复版本，升级修不了，如实汇报）"
+    else
+      echo "  [stdlib] 当前 go ${INST}  CVE×${STDLIB_N}  修复候选: $(paste -sd'/' - <<<"$CANDS")"
+      # 候选里混着三类不能用的东西，简单"取最高"会选错，逐层筛掉：
+      #   1) 预发布版（如 1.27.0-rc.3，还常常在 mirror 里根本不存在）——不用于生产构建；
+      #   2) 低于当前版本的（当前 1.26.5 时的 1.25.13 是旧 minor 线的补丁）——升上去等于降级；
+      #   3) registry 里不存在的 tag——流水线要跑到拉镜像才失败，白等一轮。
+      USABLE=""
+      while IFS= read -r C; do
+        [[ -n "$C" ]] || continue
+        if ver_is_prerelease "$C"; then
+          echo "           - 排除 $C：预发布版本，不用于生产构建"
+        elif ! ver_ge "$C" "$INST"; then
+          echo "           - 排除 $C：低于当前 go ${INST}，升上去等于降级"
+        else
+          USABLE+="${C}"$'\n'
+        fi
+      done <<<"$CANDS"
+      USABLE="$(grep -v '^$' <<<"$USABLE" | sort -uV || true)"
+
+      if [[ -z "$USABLE" ]]; then
+        echo "           （候选全被排除：只有预发布版或降级版本，这条修不了，如实汇报让用户决策）"
+      else
+        # 同 minor 线优先：补丁升级的风险远低于跨次版本。只能跨 minor 时取最低的那个。
+        MM="$(cut -d. -f1-2 <<<"$INST")"
+        PICK="$(awk -v mm="${MM}." 'index($0, mm) == 1' <<<"$USABLE" | tail -1)"
+        CROSS_MINOR=0
+        [[ -n "$PICK" ]] || { PICK="$(head -1 <<<"$USABLE")"; CROSS_MINOR=1; }
+
+        info "探测 ${BASE_IMAGE_PATH} 在 $BASE_IMAGE_REGISTRY 上从 $PICK 起可用的补丁版 ..."
+        NEWEST="$(newest_available_patch "$(cut -d. -f1-2 <<<"$PICK")" "$(cut -d. -f3 <<<"$PICK")")"
+        if [[ -z "$NEWEST" ]]; then
+          echo "           ! ${BASE_IMAGE_PATH}:${PICK} 及其后续补丁版在 $BASE_IMAGE_REGISTRY 上都不存在"
+          echo "             （上游发了补丁版但 mirror 还没同步）这条 stdlib 漏洞暂时修不了，"
+          echo "             把原因如实汇报给用户决策，不要硬凑一个版本。"
+        else
+          echo "           → apply-fix.sh --go ${NEWEST}"
+          [[ "$NEWEST" != "$PICK" ]] \
+            && echo "             （最小可覆盖版本是 ${PICK}，${NEWEST} 是 $(cut -d. -f1-2 <<<"$PICK") 线上 registry 里最新的可用补丁版）"
+          [[ "$CROSS_MINOR" -eq 1 ]] \
+            && echo "             ! 跨 Go 次版本（${INST} → ${NEWEST}）：同 minor 线没有可用候选，最终报告里要着重说明"
+        fi
+      fi
     fi
   fi
 
@@ -167,7 +206,23 @@ if [[ "$STDLIB_N" -gt 0 || "$GOMOD_N" -gt 0 ]]; then
     CANDS="$(awk -F'\t' -v p="$PKG" '$1 == "GO_MODULE" && $2 == p { print $4 }' "$TSV" | tr ',' '\n' | grep -v '^$' | sort -uV || true)"
     if [[ -n "$CANDS" ]]; then
       echo "  [go.mod] $PKG 当前 v${INST}  CVE×${N_FIX}$([[ "$N_NOFIX" -gt 0 ]] && echo "（另有 ${N_NOFIX} 个无修复版本）")  候选: $(paste -sd'/' - <<<"$CANDS")"
-      echo "           → apply-fix.sh --replace '${PKG}@v$(tail -1 <<<"$CANDS")#${CVES}'"
+      # 预发布版/伪版本不适合钉；只有当候选里还剩正式版时才排除它们
+      # 注: 循环体末尾不能留 `[[ ... ]] && ...` 这种可能返回非零的写法，set -e 会把子 shell 提前掐断
+      REAL="$(while IFS= read -r C; do ver_is_prerelease "$C" || printf '%s\n' "$C"; done <<<"$CANDS" \
+              | grep -v '^$' | sort -uV || true)"
+      if [[ -n "$REAL" ]]; then
+        PICK="$(tail -1 <<<"$REAL")"
+      else
+        PICK="$(tail -1 <<<"$CANDS")"
+        echo "           ! 候选里只有预发布版/伪版本，钉它有风险，先人工确认"
+      fi
+      # replace 是精确钉版本：目标要取 max(修复候选, 产物里当前版本)，否则会把依赖降级
+      if ! ver_ge "$PICK" "$INST"; then
+        echo "           ! 最高候选 v${PICK} 低于产物里的 v${INST}（多条 minor 线各自发补丁导致），"
+        echo "             钉 v${PICK} 会降级。请人工确认该 CVE 在 v${INST} 上的真实修复版本再定。"
+        PICK="$INST"
+      fi
+      echo "           → apply-fix.sh --replace '${PKG}@v${PICK}#${CVES}'"
     else
       echo "  [go.mod] $PKG 当前 v${INST}  CVE×${N_NOFIX}  （无修复版本，升级修不了，如实汇报）"
     fi

@@ -35,8 +35,6 @@ skill 位于 [.claude/skills/sync-upstream](./.claude/skills/sync-upstream)，�
 
 ## 漏洞修复
 
-TODO: 因为升级到 v0.158.0 后无漏洞，所以 fix-image-vulns skill 未实际验证过。
-
 修复流水线构建出的 otelcol 镜像漏洞。在本仓库根目录执行，参数是构建流水线的 run ID（或 run URL），
 也可以直接给镜像地址：
 
