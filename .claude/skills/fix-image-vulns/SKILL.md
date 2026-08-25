@@ -62,9 +62,16 @@ ocb 按它生成 `_build/go.mod` 再编译。所以修依赖漏洞的手段是�
   但如果最后只提交了无关文件，PR 不会构建，也就没有新镜像可回归扫描。
 - **构建期间不要去读 `_build/go.mod`**：ocb 先写一个最小 go.mod 再交给 `go mod tidy` 补全，
   中途读到的是中间态。要看依赖版本等 `build-verify.sh` 跑完。
-- **监控流水线期间不要往修复分支 push 任何无关改动**（顺手提交的 skill 改动、README 之类）。
-  `watch-pr.sh` 每轮重取 PR head，head 一变就改去找新 commit 的 run，而无关改动命中不了 paths
-  过滤、不会产生新 run，于是在宽限期后报 PIPELINE_NOT_FOUND——明明构建好好的，却被自己打断。
+- **`pull_request` 的 `paths` 过滤是按整个 PR diff 判定的，不是按这一次 push 改了哪些文件。**
+  修复 PR 里已经改过 `Dockerfile` / `manifest.yaml`，那么之后哪怕只 push 一个纯文档改动，
+  synchronize 事件照样命中过滤、照样把双平台镜像重新构建一遍
+  （实测 2026-08-25：往 PR #6 追加一个只动 `.claude/**` 和 `README.md` 的 commit，
+  触发了新 run 32803862571）。
+- **正因如此，监控流水线期间不要往修复分支 push 任何无关改动**（顺手提交的 skill 改动、README 之类）：
+  `watch-pr.sh` 每轮重取 PR head，head 一变就转去盯新 commit 的 run，上一轮快跑完的构建白等，
+  还多烧一次双平台构建。无关改动要么并进第一个 commit 一起提，要么等整轮跑完再 push。
+  （反过来，如果 PR 从头到尾只有无关文件，那就一次 run 都不会有，`watch-pr.sh` 在宽限期后报
+  PIPELINE_NOT_FOUND，`create-pr.sh` 对这种情况提前有 warn。）
 - git 规矩：**禁止 `git commit --amend`**，一律新建 commit；message 不要带 `Co-Authored-By` /
   `Claude-Session`。`gh` 命令必须显式 `--repo alauda-mesh/alauda-opentelemetry-collector`（脚本已内置）。
 - 修复轮次上限 **3 轮**（首轮 + 回归后最多再修 2 次），修不完就如实汇报，让用户决策。
